@@ -1,5 +1,6 @@
 import argparse
 from os import path
+from turtle import shape
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -18,24 +19,28 @@ from torch.utils.data import DataLoader
 MODEL_STATE_FILE = path.join(path.dirname(path.abspath(__file__)), "model_state.pth")
 
 
-class BasicGraphModel(nn.Module):
+class GATModel(nn.Module):
 
-    def __init__(self, g, n_layers, input_size, hidden_size, output_size, nonlinearity):
+    def __init__(self, g, input_size, hidden_size, output_size, nonlinearity):
         super().__init__()
-
         self.g = g
+        self.hidden_size = hidden_size
         self.layers = nn.ModuleList()
-        self.layers.append(GATConv(input_size, hidden_size, num_heads=1, activation=nonlinearity))
-        for i in range(n_layers - 1):
-            self.layers.append(GATConv(hidden_size, hidden_size, num_heads=1, activation=nonlinearity))
-        self.layers.append(GATConv(hidden_size, output_size, num_heads=1))
+        self.layers.append(GATConv(input_size, hidden_size, num_heads=4, activation=nonlinearity))
+        self.layers.append(GATConv(hidden_size * 4, hidden_size, num_heads=4, activation=nonlinearity))
+        self.layers.append(GATConv(hidden_size * 4, output_size, num_heads=6))
 
     def forward(self, inputs):
         outputs = inputs
-        for i, layer in enumerate(self.layers):
-            outputs = layer(self.g, outputs)
-
-        return torch.squeeze(outputs)
+        for i, layer in enumerate(self.layers[:-1]):
+            outputs = layer(self.g, outputs).view(-1, self.hidden_size*4)
+        
+        # last layer
+        outputs = self.layers[-1](self.g, outputs)
+        outputs = torch.mean(outputs, 1) # average
+        #outputs = torch.sigmoid(outputs) # sigmoid
+        # try relu activation instead of sigmoid (vanishing gradient...)
+        return outputs
 
 def main(args):
 
@@ -50,13 +55,19 @@ def main(args):
 
     ########### Replace this model with your own GNN implemented class ################################
 
-    model = BasicGraphModel(g=train_dataset.graph, n_layers=2, input_size=n_features,
-                            hidden_size=256, output_size=n_classes, nonlinearity=F.elu).to(device)
+    # Architecture in the paper: 
+    # 3 layers, 
+    # First two layers: 4 heads, hidden_size: 256, ELU nonlinearity
+    # final layer: 6 heads, output size 121 + Average Pooling + Logistic Sigmoid 
+    # no dropout or regularization, but skip connections
+    # batch_size: 2, Glorot initialization, Minimize Cross-Entropy-Loss, Adam Optimizer (initial learning rate: 0.005)
+    # Max 100 epochs, early stopping with micro-F1 on validation set (20 graphs for training, 2 for validation, 2 for testing)
+    model = GATModel(g=train_dataset.graph, input_size=n_features, hidden_size=256, output_size=n_classes, nonlinearity=F.elu).to(device)
 
     ###################################################################################################
 
     loss_fcn = nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.Adam(model.parameters())
+    optimizer = optim.Adam(model.parameters(), lr=0.005)
 
     # train
     if args.mode == "train":
@@ -109,7 +120,7 @@ def train(model, loss_fcn, device, optimizer, train_dataloader, test_dataset):
                 epoch_list.append(epoch)
             print("F1-Score: {:.4f} ".format(np.array(scores).mean()))
 
-    # plot_f1_score(epoch_list, f1_score_list)
+    plot_f1_score(epoch_list, f1_score_list)
 
 def test(model, loss_fcn, device, test_dataloader):
     test_scores = []
@@ -155,7 +166,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode",  choices=["train", "test"], default="train")
     parser.add_argument("--gpu", type=int, default=-1, help="GPU to use. Set -1 to use CPU.")
-    parser.add_argument("--epochs", type=int, default=250)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=2)
     args = parser.parse_args()
 
