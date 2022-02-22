@@ -20,26 +20,30 @@ MODEL_STATE_FILE = path.join(path.dirname(path.abspath(__file__)), "model_state.
 
 
 class GATModel(nn.Module):
+    # Implementation of Graph Attention Model
+    # Architecture similar to the one presented by Velickovic et al.: 
+    # 3 GATConv layers
+    # First two layers: 4 heads, hidden size: 256, ELU nonlinearity
+    # final layer: 6 heads, output size: 121 + Average (without logistic sigmoid as opposed to the paper)
+    # no dropout or regularization, but skip connections (residual)
 
     def __init__(self, g, input_size, hidden_size, output_size, nonlinearity):
         super().__init__()
         self.g = g
         self.hidden_size = hidden_size
         self.layers = nn.ModuleList()
-        self.layers.append(GATConv(input_size, hidden_size, num_heads=4, activation=nonlinearity))
-        self.layers.append(GATConv(hidden_size * 4, hidden_size, num_heads=4, activation=nonlinearity))
-        self.layers.append(GATConv(hidden_size * 4, output_size, num_heads=6))
+        self.layers.append(GATConv(input_size, hidden_size, num_heads=4, residual=True, activation=nonlinearity))
+        self.layers.append(GATConv(hidden_size * 4, hidden_size, num_heads=4, residual=True, activation=nonlinearity))
+        self.layers.append(GATConv(hidden_size * 4, output_size, num_heads=6, residual=True))
 
     def forward(self, inputs):
         outputs = inputs
         for i, layer in enumerate(self.layers[:-1]):
-            outputs = layer(self.g, outputs).view(-1, self.hidden_size*4)
+            outputs = layer(self.g, outputs).view(-1, self.hidden_size*4) # concatenate intermediate layers from different heads
         
         # last layer
         outputs = self.layers[-1](self.g, outputs)
-        outputs = torch.mean(outputs, 1) # average
-        #outputs = torch.sigmoid(outputs) # sigmoid
-        # try relu activation instead of sigmoid (vanishing gradient...)
+        outputs = torch.mean(outputs, 1) # average outputs of the different heads
         return outputs
 
 def main(args):
@@ -55,13 +59,6 @@ def main(args):
 
     ########### Replace this model with your own GNN implemented class ################################
 
-    # Architecture in the paper: 
-    # 3 layers, 
-    # First two layers: 4 heads, hidden_size: 256, ELU nonlinearity
-    # final layer: 6 heads, output size 121 + Average Pooling + Logistic Sigmoid 
-    # no dropout or regularization, but skip connections
-    # batch_size: 2, Glorot initialization, Minimize Cross-Entropy-Loss, Adam Optimizer (initial learning rate: 0.005)
-    # Max 100 epochs, early stopping with micro-F1 on validation set (20 graphs for training, 2 for validation, 2 for testing)
     model = GATModel(g=train_dataset.graph, input_size=n_features, hidden_size=256, output_size=n_classes, nonlinearity=F.elu).to(device)
 
     ###################################################################################################
